@@ -477,10 +477,10 @@ func (f *FragmentWriter) Write(b []byte) (int, error) {
 		}
 		data := b[5:recordLen]
 		buf := make([]byte, 1024)
-		queue := make([]byte, 2048) //gfwknocker
+		queue := make([]byte, 2048)                     //gfwknocker
 		n_queue := int(randBetween(int64(1), int64(4))) //gfwknocker
-		L_queue := 0 //gfwknocker
-		c_queue := 0 //gfwknocker
+		L_queue := 0                                    //gfwknocker
+		c_queue := 0                                    //gfwknocker
 		for from := 0; ; {
 			to := from + int(randBetween(int64(f.fragment.LengthMin), int64(f.fragment.LengthMax)))
 			if to > len(data) {
@@ -493,51 +493,51 @@ func (f *FragmentWriter) Write(b []byte) (int, error) {
 			buf[3] = byte(l >> 8)
 			buf[4] = byte(l)
 			//gfwknocker {{{{
-				if c_queue < n_queue {
-					if l > 0 {
-						copy(queue[L_queue:], buf[:5+l])
-						L_queue = L_queue + 5 + l
+			if c_queue < n_queue {
+				if l > 0 {
+					copy(queue[L_queue:], buf[:5+l])
+					L_queue = L_queue + 5 + l
+				}
+				c_queue = c_queue + 1
+			} else {
+				if l > 0 {
+					copy(queue[L_queue:], buf[:5+l])
+					L_queue = L_queue + 5 + l
+				}
+
+				if L_queue > 0 {
+					_, err := f.writer.Write(queue[:L_queue])
+					time.Sleep(time.Duration(randBetween(int64(f.fragment.IntervalMin), int64(f.fragment.IntervalMax))) * time.Millisecond)
+					if err != nil {
+						return 0, err
 					}
-					c_queue = c_queue + 1
-				} else {
-					if l > 0 {
-						copy(queue[L_queue:], buf[:5+l])
-						L_queue = L_queue + 5 + l
-					}
-	
-					if L_queue > 0 {
-						_, err := f.writer.Write(queue[:L_queue])
-						time.Sleep(time.Duration(randBetween(int64(f.fragment.IntervalMin), int64(f.fragment.IntervalMax))) * time.Millisecond)
-						if err != nil {
-							return 0, err
-						}
-					}
-	
+				}
+
+				L_queue = 0
+				c_queue = 0
+
+			}
+
+			if from == len(data) {
+				if L_queue > 0 {
+					_, err := f.writer.Write(queue[:L_queue])
+					time.Sleep(time.Duration(randBetween(int64(f.fragment.IntervalMin), int64(f.fragment.IntervalMax))) * time.Millisecond)
 					L_queue = 0
 					c_queue = 0
-	
-				}
-	
-				if from == len(data) {
-					if L_queue > 0 {
-						_, err := f.writer.Write(queue[:L_queue])
-						time.Sleep(time.Duration(randBetween(int64(f.fragment.IntervalMin), int64(f.fragment.IntervalMax))) * time.Millisecond)
-						L_queue = 0
-						c_queue = 0
-	
-						if err != nil {
-							return 0, err
-						}
+
+					if err != nil {
+						return 0, err
 					}
-					if len(b) > recordLen {
-						n, err := f.writer.Write(b[recordLen:])
-						if err != nil {
-							return recordLen + n, err
-						}
-					}
-					return len(b), nil
 				}
+				if len(b) > recordLen {
+					n, err := f.writer.Write(b[recordLen:])
+					if err != nil {
+						return recordLen + n, err
+					}
+				}
+				return len(b), nil
 			}
+
 			//GFW-Knocker}}}}
 		}
 	}
