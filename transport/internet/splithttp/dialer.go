@@ -3,7 +3,6 @@ package splithttp
 import (
 	"context"
 	gotls "crypto/tls"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -25,6 +24,16 @@ import (
 	"github.com/xtls/xray-core/transport/pipe"
 	"golang.org/x/net/http2"
 )
+
+// defines the maximum time an idle TCP session can survive in the tunnel, so
+// it should be consistent across HTTP versions and with other transports.
+const connIdleTimeout = 300 * time.Second
+
+// consistent with quic-go
+const h3KeepalivePeriod = 10 * time.Second
+
+// consistent with chrome
+const h2KeepalivePeriod = 45 * time.Second
 
 type dialerConf struct {
 	net.Destination
@@ -89,7 +98,17 @@ func getHTTPClient(ctx context.Context, dest net.Destination, streamSettings *in
 	var uploadTransport http.RoundTripper
 
 	if isH3 {
+		quicConfig := &quic.Config{
+			MaxIdleTimeout: connIdleTimeout,
+
+			// these two are defaults of quic-go/http3. the default of quic-go (no
+			// http3) is different, so it is hardcoded here for clarity.
+			// https://github.com/quic-go/quic-go/blob/b8ea5c798155950fb5bbfdd06cad1939c9355878/http3/client.go#L36-L39
+			MaxIncomingStreams: -1,
+			KeepAlivePeriod:    h3KeepalivePeriod,
+		}
 		roundTripper := &http3.RoundTripper{
+			QUICConfig:      quicConfig,
 			TLSClientConfig: gotlsConfig,
 			Dial: func(ctx context.Context, addr string, tlsCfg *gotls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
 				conn, err := internet.DialSystem(ctx, dest, streamSettings.SocketSettings)
@@ -97,7 +116,7 @@ func getHTTPClient(ctx context.Context, dest net.Destination, streamSettings *in
 					return nil, err
 				}
 
-				var udpConn *net.UDPConn
+				var udpConn net.PacketConn
 				var udpAddr *net.UDPAddr
 
 				switch c := conn.(type) {
@@ -118,7 +137,11 @@ func getHTTPClient(ctx context.Context, dest net.Destination, streamSettings *in
 						return nil, err
 					}
 				default:
-					return nil, errors.New("unsupported connection type: %T", conn)
+					udpConn = &internet.FakePacketConn{c}
+					udpAddr, err = net.ResolveUDPAddr("udp", c.RemoteAddr().String())
+					if err != nil {
+						return nil, err
+					}
 				}
 
 				return quic.DialEarly(ctx, udpConn, udpAddr, tlsCfg, cfg)
@@ -131,7 +154,8 @@ func getHTTPClient(ctx context.Context, dest net.Destination, streamSettings *in
 			DialTLSContext: func(ctxInner context.Context, network string, addr string, cfg *gotls.Config) (net.Conn, error) {
 				return dialContext(ctxInner)
 			},
-			IdleConnTimeout: 90 * time.Second,
+			IdleConnTimeout: connIdleTimeout,
+			ReadIdleTimeout: h2KeepalivePeriod,
 		}
 		uploadTransport = downloadTransport
 	} else {
@@ -142,7 +166,7 @@ func getHTTPClient(ctx context.Context, dest net.Destination, streamSettings *in
 		downloadTransport = &http.Transport{
 			DialTLSContext:  httpDialContext,
 			DialContext:     httpDialContext,
-			IdleConnTimeout: 90 * time.Second,
+			IdleConnTimeout: connIdleTimeout,
 			// chunked transfer download with keepalives is buggy with
 			// http.Client and our custom dial context.
 			DisableKeepAlives: true,
@@ -196,12 +220,16 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 	}
 
 	sessionIdUuid := uuid.New()
-	requestURL.Path = transportConfiguration.GetNormalizedPath(sessionIdUuid.String(), true)
-	baseURL := requestURL.String()
+	requestURL.Path = transportConfiguration.GetNormalizedPath() + sessionIdUuid.String()
+	requestURL.RawQuery = transportConfiguration.GetNormalizedQuery()
 
 	httpClient := getHTTPClient(ctx, dest, streamSettings)
 
-	uploadPipeReader, uploadPipeWriter := pipe.New(pipe.WithSizeLimit(scMaxEachPostBytes.roll()))
+	maxUploadSize := scMaxEachPostBytes.roll()
+	// WithSizeLimit(0) will still allow single bytes to pass, and a lot of
+	// code relies on this behavior. Subtract 1 so that together with
+	// uploadWriter wrapper, exact size limits can be enforced
+	uploadPipeReader, uploadPipeWriter := pipe.New(pipe.WithSizeLimit(maxUploadSize - 1))
 
 	go func() {
 		requestsLimiter := semaphore.New(int(scMaxConcurrentPosts.roll()))
@@ -226,9 +254,16 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 			go func() {
 				defer requestsLimiter.Signal()
 
+				// this intentionally makes a shallow-copy of the struct so we
+				// can reassign Path (potentially concurrently)
+				url := requestURL
+				url.Path += "/" + strconv.FormatInt(seq, 10)
+				// reassign query to get different padding
+				url.RawQuery = transportConfiguration.GetNormalizedQuery()
+
 				err := httpClient.SendUploadRequest(
 					context.WithoutCancel(ctx),
-					baseURL+"/"+strconv.FormatInt(seq, 10),
+					url.String(),
 					&buf.MultiBufferContainer{MultiBuffer: chunk},
 					int64(chunk.Len()),
 				)
@@ -250,39 +285,55 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		}
 	}()
 
-	lazyRawDownload, remoteAddr, localAddr, err := httpClient.OpenDownload(context.WithoutCancel(ctx), baseURL)
+	lazyRawDownload, remoteAddr, localAddr, err := httpClient.OpenDownload(context.WithoutCancel(ctx), requestURL.String())
 	if err != nil {
 		return nil, err
 	}
 
-	lazyDownload := &LazyReader{
-		CreateReader: func() (io.ReadCloser, error) {
-			// skip "ooooooooook" response
-			trashHeader := []byte{0}
-			for {
-				_, err := io.ReadFull(lazyRawDownload, trashHeader)
-				if err != nil {
-					return nil, errors.New("failed to read initial response").Base(err)
-				}
-				if trashHeader[0] == 'k' {
-					break
-				}
-			}
+	reader := &stripOkReader{ReadCloser: lazyRawDownload}
 
-			return lazyRawDownload, nil
-		},
+	writer := uploadWriter{
+		uploadPipeWriter,
+		maxUploadSize,
 	}
 
-	// necessary in order to send larger chunks in upload
-	bufferedUploadPipeWriter := buf.NewBufferedWriter(uploadPipeWriter)
-	bufferedUploadPipeWriter.SetBuffered(false)
-
 	conn := splitConn{
-		writer:     bufferedUploadPipeWriter,
-		reader:     lazyDownload,
+		writer:     writer,
+		reader:     reader,
 		remoteAddr: remoteAddr,
 		localAddr:  localAddr,
 	}
 
 	return stat.Connection(&conn), nil
+}
+
+// A wrapper around pipe that ensures the size limit is exactly honored.
+//
+// The MultiBuffer pipe accepts any single WriteMultiBuffer call even if that
+// single MultiBuffer exceeds the size limit, and then starts blocking on the
+// next WriteMultiBuffer call. This means that ReadMultiBuffer can return more
+// bytes than the size limit. We work around this by splitting a potentially
+// too large write up into multiple.
+type uploadWriter struct {
+	*pipe.Writer
+	maxLen int32
+}
+
+func (w uploadWriter) Write(b []byte) (int, error) {
+	capacity := int(w.maxLen - w.Len())
+	if capacity > 0 && capacity < len(b) {
+		b = b[:capacity]
+	}
+
+	buffer := buf.New()
+	n, err := buffer.Write(b)
+	if err != nil {
+		return 0, err
+	}
+
+	err = w.WriteMultiBuffer([]*buf.Buffer{buffer})
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
