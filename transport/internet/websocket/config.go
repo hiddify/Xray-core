@@ -26,6 +26,11 @@ func (c *Config) GetRequestHeader() http.Header {
 		header.Add(k, v)
 	}
 	header.Set("Host", c.Host)
+	// GFW-Knocker
+	uagent := header.Get("User-Agent")
+	if uagent == "" {
+		header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.99 Mobile Safari/537.36")
+	}
 	return header
 }
 
