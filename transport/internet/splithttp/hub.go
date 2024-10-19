@@ -196,14 +196,6 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		h.config.WriteResponseHeader(writer)
 
 		writer.WriteHeader(http.StatusOK)
-		if _, ok := request.URL.Query()["x_padding"]; !ok {
-			// in earlier versions, this initial body data was used to immediately
-			// start a 200 OK on all CDN. but xray client since 1.8.16 does not
-			// actually require an immediate 200 OK, but now requires these
-			// additional bytes "ok". xray client 1.8.24+ doesn't require "ok"
-			// anymore, and so this line should be removed in later versions.
-			writer.Write([]byte("ok"))
-		}
 
 		responseFlusher.Flush()
 
@@ -373,7 +365,13 @@ func ListenSH(ctx context.Context, address net.Address, port net.Port, streamSet
 
 // Addr implements net.Listener.Addr().
 func (ln *Listener) Addr() net.Addr {
-	return ln.listener.Addr()
+	if ln.h3listener != nil {
+		return ln.h3listener.Addr()
+	}
+	if ln.listener != nil {
+		return ln.listener.Addr()
+	}
+	return nil
 }
 
 // Close implements net.Listener.Close().
