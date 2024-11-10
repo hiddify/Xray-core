@@ -23,9 +23,13 @@ type FreedomConfig struct {
 }
 
 type Fragment struct {
-	Packets  string      `json:"packets"`
-	Length   *Int32Range `json:"length"`
-	Interval *Int32Range `json:"interval"`
+	Packets      string      `json:"packets"`
+	Length       *Int32Range `json:"length"`
+	Interval     *Int32Range `json:"interval"`
+	Host1_header string      `json:"host1_header"`
+	Host1_domain string      `json:"host1_domain"`
+	Host2_header string      `json:"host2_header"`
+	Host2_domain string      `json:"host2_domain"`
 }
 
 type Noise struct {
