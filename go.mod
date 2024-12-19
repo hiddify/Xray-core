@@ -27,10 +27,8 @@ require (
 	golang.org/x/net v0.32.0
 	golang.org/x/sync v0.10.0
 	golang.org/x/sys v0.28.0
-	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173
 	google.golang.org/grpc v1.67.1
 	google.golang.org/protobuf v1.36.0
-	gvisor.dev/gvisor v0.0.0-20231202080848-1f7806d17489
 	h12.io/socks v1.0.3
 	lukechampine.com/blake3 v1.3.0
 )
@@ -51,7 +49,6 @@ require (
 	golang.org/x/exp v0.0.0-20240531132922-fd00a4e0eefc // indirect
 	golang.org/x/mod v0.18.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
-	golang.org/x/time v0.5.0 // indirect
 	golang.org/x/tools v0.22.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240814211410-ddb44dafa142 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
