@@ -18,6 +18,8 @@ import (
 
 // interface to abstract between use of browser dialer, vs net/http
 type DialerClient interface {
+	IsClosed() bool
+
 	// (ctx, baseURL, payload) -> err
 	// baseURL already contains sessionId and seq
 	SendUploadRequest(context.Context, string, io.ReadWriteCloser, int64) error
@@ -25,17 +27,73 @@ type DialerClient interface {
 	// (ctx, baseURL) -> (downloadReader, remoteAddr, localAddr)
 	// baseURL already contains sessionId
 	OpenDownload(context.Context, string) (io.ReadCloser, net.Addr, net.Addr, error)
+
+	// (ctx, baseURL) -> uploadWriter
+	// baseURL already contains sessionId
+	OpenUpload(context.Context, string) io.WriteCloser
+
+	// (ctx, pureURL) -> (uploadWriter, downloadReader)
+	// pureURL can not contain sessionId
+	Open(context.Context, string) (io.WriteCloser, io.ReadCloser)
 }
 
 // implements splithttp.DialerClient in terms of direct network connections
 type DefaultDialerClient struct {
 	transportConfig *Config
 	client          *http.Client
-	isH2            bool
-	isH3            bool
+	closed          bool
+	httpVersion     string
 	// pool of net.Conn, created using dialUploadConn
 	uploadRawPool  *sync.Pool
 	dialUploadConn func(ctxInner context.Context) (net.Conn, error)
+}
+
+func (c *DefaultDialerClient) IsClosed() bool {
+	return c.closed
+}
+
+func (c *DefaultDialerClient) Open(ctx context.Context, pureURL string) (io.WriteCloser, io.ReadCloser) {
+	reader, writer := io.Pipe()
+	req, _ := http.NewRequestWithContext(ctx, "POST", pureURL, reader)
+	req.Header = c.transportConfig.GetRequestHeader()
+	if !c.transportConfig.NoGRPCHeader {
+		req.Header.Set("Content-Type", "application/grpc")
+	}
+	wrc := &WaitReadCloser{Wait: make(chan struct{})}
+	go func() {
+		response, err := c.client.Do(req)
+		if err != nil || response.StatusCode != 200 {
+			if err != nil {
+				errors.LogInfoInner(ctx, err, "failed to open ", pureURL)
+			} else {
+				// c.closed = true
+				response.Body.Close()
+				errors.LogInfo(ctx, "unexpected status ", response.StatusCode)
+			}
+			wrc.Close()
+			return
+		}
+		wrc.Set(response.Body)
+	}()
+	return writer, wrc
+}
+
+func (c *DefaultDialerClient) OpenUpload(ctx context.Context, baseURL string) io.WriteCloser {
+	reader, writer := io.Pipe()
+	req, _ := http.NewRequestWithContext(ctx, "POST", baseURL, reader)
+	req.Header = c.transportConfig.GetRequestHeader()
+	if !c.transportConfig.NoGRPCHeader {
+		req.Header.Set("Content-Type", "application/grpc")
+	}
+	go func() {
+		if resp, err := c.client.Do(req); err == nil {
+			if resp.StatusCode != 200 {
+				// c.closed = true
+			}
+			resp.Body.Close()
+		}
+	}()
+	return writer
 }
 
 func (c *DefaultDialerClient) OpenDownload(ctx context.Context, baseURL string) (io.ReadCloser, gonet.Addr, gonet.Addr, error) {
@@ -88,6 +146,7 @@ func (c *DefaultDialerClient) OpenDownload(ctx context.Context, baseURL string) 
 		}
 
 		if response.StatusCode != 200 {
+			// c.closed = true
 			response.Body.Close()
 			errors.LogInfo(ctx, "invalid status code on download:", response.Status)
 			gotDownResponse.Close()
@@ -98,14 +157,7 @@ func (c *DefaultDialerClient) OpenDownload(ctx context.Context, baseURL string) 
 		gotDownResponse.Close()
 	}()
 
-	if !c.isH3 {
-		// in quic-go, sometimes gotConn is never closed for the lifetime of
-		// the entire connection, and the download locks up
-		// https://github.com/quic-go/quic-go/issues/3342
-		// for other HTTP versions, we want to block Dial until we know the
-		// remote address of the server, for logging purposes
-		<-gotConn.Wait()
-	}
+	<-gotConn.Wait()
 
 	lazyDownload := &LazyReader{
 		CreateReader: func() (io.Reader, error) {
@@ -129,14 +181,14 @@ func (c *DefaultDialerClient) OpenDownload(ctx context.Context, baseURL string) 
 }
 
 func (c *DefaultDialerClient) SendUploadRequest(ctx context.Context, url string, payload io.ReadWriteCloser, contentLength int64) error {
-	req, err := http.NewRequest("POST", url, payload)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, payload)
 	if err != nil {
 		return err
 	}
 	req.ContentLength = contentLength
 	req.Header = c.transportConfig.GetRequestHeader()
 
-	if c.isH2 || c.isH3 {
+	if c.httpVersion != "1.1" {
 		resp, err := c.client.Do(req)
 		if err != nil {
 			return err
@@ -145,6 +197,7 @@ func (c *DefaultDialerClient) SendUploadRequest(ctx context.Context, url string,
 		defer resp.Body.Close()
 
 		if resp.StatusCode != 200 {
+			// c.closed = true
 			return errors.New("bad status code:", resp.Status)
 		}
 	} else {
@@ -179,6 +232,8 @@ func (c *DefaultDialerClient) SendUploadRequest(ctx context.Context, url string,
 						return fmt.Errorf("error while reading response: %s", err.Error())
 					}
 					if resp.StatusCode != 200 {
+						// c.closed = true
+						// resp.Body.Close() // I'm not sure
 						return fmt.Errorf("got non-200 error response code: %d", resp.StatusCode)
 					}
 				}
@@ -209,5 +264,42 @@ type downloadBody struct {
 
 func (c downloadBody) Close() error {
 	c.cancel()
+	return nil
+}
+
+type WaitReadCloser struct {
+	Wait chan struct{}
+	io.ReadCloser
+}
+
+func (w *WaitReadCloser) Set(rc io.ReadCloser) {
+	w.ReadCloser = rc
+	defer func() {
+		if recover() != nil {
+			rc.Close()
+		}
+	}()
+	close(w.Wait)
+}
+
+func (w *WaitReadCloser) Read(b []byte) (int, error) {
+	if w.ReadCloser == nil {
+		if <-w.Wait; w.ReadCloser == nil {
+			return 0, io.ErrClosedPipe
+		}
+	}
+	return w.ReadCloser.Read(b)
+}
+
+func (w *WaitReadCloser) Close() error {
+	if w.ReadCloser != nil {
+		return w.ReadCloser.Close()
+	}
+	defer func() {
+		if recover() != nil && w.ReadCloser != nil {
+			w.ReadCloser.Close()
+		}
+	}()
+	close(w.Wait)
 	return nil
 }

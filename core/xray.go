@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
@@ -87,7 +88,7 @@ func (r *resolution) resolve(allFeatures []features.Feature) (bool, error) {
 	return true, err
 }
 
-// Instance combines all functionalities in Xray.
+// Instance combines all Xray features.
 type Instance struct {
 	access             sync.Mutex
 	features           []features.Feature
@@ -154,6 +155,12 @@ func addOutboundHandlers(server *Instance, configs []*OutboundHandlerConfig) err
 func RequireFeatures(ctx context.Context, callback interface{}) error {
 	v := MustFromContext(ctx)
 	return v.RequireFeatures(callback)
+}
+
+// RequireFeaturesAsync registers a callback, which will be called when all dependent features are registered. The order of app init doesn't matter
+func RequireFeaturesAsync(ctx context.Context, callback interface{}) {
+	v := MustFromContext(ctx)
+	v.RequireFeaturesAsync(callback)
 }
 
 // New returns a new Xray instance based on given configuration.
@@ -228,7 +235,7 @@ func initInstanceWithConfig(config *Config, server *Instance) (bool, error) {
 	)
 
 	if server.featureResolutions != nil {
-		return true, errors.New("not all dependency are resolved.")
+		return true, errors.New("not all dependencies are resolved.")
 	}
 
 	if err := addInboundHandlers(server, config.Inbound); err != nil {
@@ -288,6 +295,36 @@ func (s *Instance) RequireFeatures(callback interface{}) error {
 	}
 	s.featureResolutions = append(s.featureResolutions, r)
 	return nil
+}
+
+// RequireFeaturesAsync registers a callback, which will be called when all dependent features are registered. The order of app init doesn't matter
+func (s *Instance) RequireFeaturesAsync(callback interface{}) {
+	callbackType := reflect.TypeOf(callback)
+	if callbackType.Kind() != reflect.Func {
+		panic("not a function")
+	}
+
+	var featureTypes []reflect.Type
+	for i := 0; i < callbackType.NumIn(); i++ {
+		featureTypes = append(featureTypes, reflect.PtrTo(callbackType.In(i)))
+	}
+
+	r := resolution{
+		deps:     featureTypes,
+		callback: callback,
+	}
+	go func() {
+		var finished = false
+		for i := 0; !finished; i++ {
+			if i > 100000 {
+				errors.LogError(s.ctx, "RequireFeaturesAsync failed after count ", i)
+				break;
+			}
+			finished, _ = r.resolve(s.features)
+			time.Sleep(time.Millisecond)
+		}
+		s.featureResolutions = append(s.featureResolutions, r)
+	}()
 }
 
 // AddFeature registers a feature into current Instance.

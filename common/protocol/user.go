@@ -7,7 +7,7 @@ import (
 
 func (u *User) GetTypedAccount() (Account, error) {
 	if u.GetAccount() == nil {
-		return nil, errors.New("Account missing").AtWarning()
+		return nil, errors.New("Account is missing").AtWarning()
 	}
 
 	rawAccount, err := u.Account.GetInstance()
@@ -41,8 +41,8 @@ func ToProtoUser(mu *MemoryUser) *User {
 	}
 	return &User{
 		Account: serial.ToTypedMessage(mu.Account.ToProto()),
-		Email: mu.Email,
-		Level: mu.Level,
+		Email:   mu.Email,
+		Level:   mu.Level,
 	}
 }
 
