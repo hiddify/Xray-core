@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"fmt"
 
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
@@ -256,6 +257,10 @@ type Int32Range struct {
 	Right int32
 	From  int32
 	To    int32
+}
+
+func (v *Int32Range) MarshalJSON() ([]byte, error) {
+	return json.Marshal(fmt.Sprintf("%d-%d", v.Left, v.Right))
 }
 
 func (v *Int32Range) UnmarshalJSON(data []byte) error {
