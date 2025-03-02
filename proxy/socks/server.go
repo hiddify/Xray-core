@@ -2,6 +2,7 @@ package socks
 
 import (
 	"context"
+	goerrors "errors"
 	"io"
 	"time"
 
@@ -78,7 +79,13 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	switch network {
 	case net.Network_TCP:
 		firstbyte := make([]byte, 1)
-		conn.Read(firstbyte)
+		if n, err := conn.Read(firstbyte); n == 0 {
+			if goerrors.Is(err, io.EOF) {
+				errors.LogInfo(ctx, "Connection closed immediately, likely health check connection")
+				return nil
+			}
+			return errors.New("failed to read from connection").Base(err)
+		}
 		if firstbyte[0] != 5 && firstbyte[0] != 4 { // Check if it is Socks5/4/4a
 			errors.LogDebug(ctx, "Not Socks request, try to parse as HTTP request")
 			return s.httpServer.ProcessWithFirstbyte(ctx, network, conn, dispatcher, firstbyte...)
@@ -192,6 +199,7 @@ func (s *Server) transport(ctx context.Context, reader io.Reader, writer io.Writ
 	}
 
 	responseDone := func() error {
+		inbound.CanSpliceCopy = 1
 		defer timer.SetTimeout(plcy.Timeouts.UplinkOnly)
 
 		v2writer := buf.NewWriter(writer)
@@ -249,6 +257,7 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 	if inbound != nil && inbound.Source.IsValid() {
 		errors.LogInfo(ctx, "client UDP connection from ", inbound.Source)
 	}
+	inbound.CanSpliceCopy = 1
 
 	var dest *net.Destination
 

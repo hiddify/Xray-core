@@ -35,3 +35,23 @@ build:
 clean:
 	go clean -v -i $(PWD)
 	rm -f xray xray.exe wxray.exe xray_softfloat
+
+
+
+PROTOC_VERSION := 28.2
+PROTOC_GO_VERSION:=1.35.1
+install_protoc:
+	mkdir -p /tmp/protoc_install
+	wget -O /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v$(PROTOC_VERSION)/protoc-$(PROTOC_VERSION)-linux-x86_64.zip
+	unzip /tmp/protoc.zip -d /tmp/protoc_install
+	mkdir -p ~/local/bin ~/.local/bin/
+	mv /tmp/protoc_install/bin/protoc ~/.local/bin/
+	rm -rf /tmp/protoc_install /tmp/protoc.zip
+
+
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@v$(PROTOC_GO_VERSION)
+	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+
+protos:
+	go run ./infra/vprotogen/main.go 

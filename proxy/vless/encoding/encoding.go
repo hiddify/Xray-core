@@ -172,19 +172,19 @@ func DecodeResponseHeader(reader io.Reader, request *protocol.RequestHeader) (*A
 }
 
 // XtlsRead filter and read xtls protocol
-func XtlsRead(reader buf.Reader, writer buf.Writer, timer *signal.ActivityTimer, conn net.Conn, input *bytes.Reader, rawInput *bytes.Buffer, trafficState *proxy.TrafficState, ob *session.Outbound, ctx context.Context) error {
+func XtlsRead(reader buf.Reader, writer buf.Writer, timer *signal.ActivityTimer, conn net.Conn, input *bytes.Reader, rawInput *bytes.Buffer, trafficState *proxy.TrafficState, ob *session.Outbound, isUplink bool, ctx context.Context) error {
 	err := func() error {
 		for {
-			if trafficState.ReaderSwitchToDirectCopy {
+			if isUplink && trafficState.Inbound.UplinkReaderDirectCopy || !isUplink && trafficState.Outbound.DownlinkReaderDirectCopy {
 				var writerConn net.Conn
 				var inTimer *signal.ActivityTimer
 				if inbound := session.InboundFromContext(ctx); inbound != nil && inbound.Conn != nil {
 					writerConn = inbound.Conn
 					inTimer = inbound.Timer
-					if inbound.CanSpliceCopy == 2 {
+					if isUplink && inbound.CanSpliceCopy == 2 {
 						inbound.CanSpliceCopy = 1
 					}
-					if ob != nil && ob.CanSpliceCopy == 2 { // ob need to be passed in due to context can change
+					if !isUplink && ob != nil && ob.CanSpliceCopy == 2 { // ob need to be passed in due to context can change
 						ob.CanSpliceCopy = 1
 					}
 				}
@@ -193,7 +193,7 @@ func XtlsRead(reader buf.Reader, writer buf.Writer, timer *signal.ActivityTimer,
 			buffer, err := reader.ReadMultiBuffer()
 			if !buffer.IsEmpty() {
 				timer.Update()
-				if trafficState.ReaderSwitchToDirectCopy {
+				if isUplink && trafficState.Inbound.UplinkReaderDirectCopy || !isUplink && trafficState.Outbound.DownlinkReaderDirectCopy {
 					// XTLS Vision processes struct TLS Conn's input and rawInput
 					if inputBuffer, err := buf.ReadFrom(input); err == nil {
 						if !inputBuffer.IsEmpty() {
@@ -222,24 +222,28 @@ func XtlsRead(reader buf.Reader, writer buf.Writer, timer *signal.ActivityTimer,
 }
 
 // XtlsWrite filter and write xtls protocol
-func XtlsWrite(reader buf.Reader, writer buf.Writer, timer signal.ActivityUpdater, conn net.Conn, trafficState *proxy.TrafficState, ob *session.Outbound, ctx context.Context) error {
+func XtlsWrite(reader buf.Reader, writer buf.Writer, timer signal.ActivityUpdater, conn net.Conn, trafficState *proxy.TrafficState, ob *session.Outbound, isUplink bool, ctx context.Context) error {
 	err := func() error {
 		var ct stats.Counter
 		for {
 			buffer, err := reader.ReadMultiBuffer()
-			if trafficState.WriterSwitchToDirectCopy {
+			if isUplink && trafficState.Outbound.UplinkWriterDirectCopy || !isUplink && trafficState.Inbound.DownlinkWriterDirectCopy {
 				if inbound := session.InboundFromContext(ctx); inbound != nil {
-					if inbound.CanSpliceCopy == 2 {
+					if !isUplink && inbound.CanSpliceCopy == 2 {
 						inbound.CanSpliceCopy = 1
 					}
-					if ob != nil && ob.CanSpliceCopy == 2 {
+					if isUplink && ob != nil && ob.CanSpliceCopy == 2 {
 						ob.CanSpliceCopy = 1
 					}
 				}
 				rawConn, _, writerCounter := proxy.UnwrapRawConn(conn)
 				writer = buf.NewWriter(rawConn)
 				ct = writerCounter
-				trafficState.WriterSwitchToDirectCopy = false
+				if isUplink {
+					trafficState.Outbound.UplinkWriterDirectCopy = false
+				} else {
+					trafficState.Inbound.DownlinkWriterDirectCopy = false
+				}
 			}
 			if !buffer.IsEmpty() {
 				if ct != nil {
