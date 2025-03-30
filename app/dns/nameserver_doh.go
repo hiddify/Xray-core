@@ -280,6 +280,7 @@ func (s *DoHNameServer) dohHTTPSContext(ctx context.Context, b []byte) ([]byte, 
 
 	req.Header.Add("Accept", "application/dns-message")
 	req.Header.Add("Content-Type", "application/dns-message")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
 
 	req.Header.Set("X-Padding", strings.Repeat("X", int(crypto.RandBetween(100, 1000))))
 

@@ -48,6 +48,9 @@ func (c *Config) GetRequestHeader(rawURL string) http.Header {
 	for k, v := range c.Headers {
 		header.Add(k, v)
 	}
+	if header.Get("User-Agent")!=""{
+		header.Set("User-Agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
+	}
 
 	u, _ := url.Parse(rawURL)
 	// https://www.rfc-editor.org/rfc/rfc7541.html#appendix-B

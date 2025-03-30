@@ -64,7 +64,10 @@ func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, body i
 	if method == "POST" && !c.transportConfig.NoGRPCHeader {
 		req.Header.Set("Content-Type", "application/grpc")
 	}
-
+	uagent := req.Header.Get("User-Agent")
+	if uagent == "" {
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
+	}
 	wrc = &WaitReadCloser{Wait: make(chan struct{})}
 	go func() {
 		resp, err := c.client.Do(req)
