@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"runtime/debug"
 	"strings"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -115,7 +116,7 @@ func IPAddress(ip []byte) Address {
 		}
 		return addr
 	default:
-		errors.LogError(context.Background(), "invalid IP format: ", ip)
+		errors.LogError(context.Background(), "invalid IP format: ", ip, string(debug.Stack()))
 		return nil
 	}
 }
